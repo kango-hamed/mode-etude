@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ajouter un rappel</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body class="popup">
+  <form id="addForm" class="pop">
+    <header class="pop-head">
+      <span class="logo" aria-hidden="true">É</span>
+      <div><b>Ne pas oublier</b><span class="muted small" id="host"></span></div>
+    </header>
+
+    <label class="f">Nom<input class="input sm" name="name" required autocomplete="off"></label>
+    <div class="pop-row">
+      <label class="f">Type<select class="input sm" name="kind"></select></label>
+      <label class="f">Date limite<input class="input sm" type="date" name="due"></label>
+    </div>
+    <div id="dates" class="pop-dates" hidden></div>
+    <label class="f">Me le rappeler<select class="input sm" name="remind"></select></label>
+    <label class="f">Prochaine étape<input class="input sm" name="next" placeholder="S'inscrire, constituer l'équipe…" autocomplete="off"></label>
+    <label class="f">Lien<input class="input sm" name="url" type="url"></label>
+
+    <p id="already" class="notice small" hidden></p>
+    <div class="pop-actions">
+      <a class="btn small" id="openApp" href="newtab.html#/" target="_blank">Mes projets</a>
+      <button class="btn primary" type="submit">Ajouter</button>
+    </div>
+    <p id="done" class="pop-done" hidden role="status"></p>
+  </form>
+  <script type="module" src="js/popup.js"></script>
+</body>
+</html>
