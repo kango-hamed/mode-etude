@@ -7,6 +7,7 @@ import { topSites, webSearch, hostOf, cleanTitle } from './browser.js';
 import { themeSupported, currentTheme, onThemeChange, paletteFrom, themeImage, canLoad } from './theme.js';
 import { PROJECT_KINDS, REMINDERS, DEFAULT_REMIND, announce, loadProjects } from './projects.js';
 import { planRevisions, stageLabel, docKind, KIND_ORDER } from './revisions.js';
+import { diffOccurrences } from './changes.js';
 import {
   DAYS, ymd, parseYmd, isoDay, addDays, startOfDay, startOfWeek, fmtLong, fmtShort,
   relDue, esc, fold, keyOf, highlight, uid, fmtSize, normTime, daysBetween,
@@ -679,6 +680,8 @@ function viewHome() {
     <button class="btn ghost icon steps-close" data-act="setup-hide" aria-label="Masquer ces suggestions" title="Masquer (tout reste dans Réglages → Imports)">×</button>
   </section>` : ''}
 
+  ${changesNotice()}
+
   <div class="widgets">
     <section class="card" aria-labelledby="h-day">
       <div class="head">
@@ -1227,6 +1230,8 @@ function viewTimetable() {
     <span style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn small" data-act="exam-add" data-ctx="sem">Ajouter à la main</button>
       <a class="btn small" href="#/reglages">Importer le calendrier (Réglages)</a></span></div>` : ''}
+
+  ${changesCard(sem)}
 
   ${exams.length || examSessions(sem).length ? examCard(sem) : ''}
 
@@ -1971,8 +1976,17 @@ async function saveDraft() {
   // Semestre, partie, classe et dates lus dans l'en-tête (corrigés à la vérification).
   const period = { semNo: Number(m.semNo) || null, part: Number(m.part) || null, className: (m.className || '').trim(), start: m.start || '', end: m.end || '' };
   const fresh = { name: '', ...period, source: d.source || 'saisie manuelle', importedAt: new Date().toISOString(), hasPdf: !!d.pdf, sessions, exams };
+  let changes = null;
   if (target === 'new' || !sem) { sem = { id: uid(), ...fresh }; S.semesters.push(sem); }
-  else if (target === 'replace') Object.assign(sem, fresh);
+  else if (target === 'replace') {
+    const before = { ...sem, sessions: [...sem.sessions] };
+    // Le calendrier des examens importé à part est gardé, sauf si ce PDF contient ses propres épreuves.
+    if (!sessions.some((s) => s.exam)) fresh.sessions = [...sessions, ...sem.sessions.filter((s) => s.exam)];
+    if (!exams.length && sem.exams?.length) fresh.exams = sem.exams;
+    Object.assign(sem, fresh);
+    changes = ttChanges(before, sem);
+    sem.changes = { at: fresh.importedAt, source: fresh.source, items: changes, homeSeen: false };
+  }
   else if (target === 'append') { sem.sessions.push(...sessions); sem.exams = [...(sem.exams || []), ...exams]; }
   else { sem.sessions = [...sessions, ...sem.sessions.filter((s) => s.exam)]; sem.exams = exams; Object.assign(sem, period); } // le calendrier des examens est gardé
   if (d.pdf && target !== 'append' && target !== 'edit') await db.kvSet(`timetablePdf:${sem.id}`, d.pdf);
@@ -1980,14 +1994,84 @@ async function saveDraft() {
   S.ui.draft = null;
   S.ui.semId = sem.id;
   recomputeAuto();
-  toast(`Emploi du temps enregistré : ${sem.sessions.length} créneaux.`);
+  toast(changes
+    ? (changes.length ? `Nouvelle version enregistrée : ${changes.length} changement${changes.length > 1 ? 's' : ''} à venir, détaillé${changes.length > 1 ? 's' : ''} sur cette page.` : 'Nouvelle version enregistrée : aucun cours à venir ne change.')
+    : `Emploi du temps enregistré : ${sem.sessions.length} créneaux.`, changes?.length ? 6000 : 3200);
   location.hash = '#/edt';
   // Nouvel emploi du temps : on propose aussitôt de préparer les dossiers de cours qui vont avec.
-  if (target !== 'edit' && target !== 'append') openFolderDialog(sem);
+  if (target === 'new' || (target === 'replace' && !changes?.length)) openFolderDialog(sem);
   render({ keepScroll: false });
 }
 
 const saveShortcuts = () => db.kvSet('shortcuts', S.shortcuts);
+
+/* ---------- Changements entre deux versions d'un emploi du temps ---------- */
+
+/** Séances (hors examens) des deux versions, jour par jour, d'aujourd'hui à la fin de la plus longue (6 mois au plus). */
+function ttChanges(before, after) {
+  const today = startOfDay(new Date());
+  const ends = [semRange(before)?.end, semRange(after)?.end].filter(Boolean);
+  if (!ends.length) return [];
+  const last = new Date(Math.min(Math.max(...ends.map(Number)), Number(addDays(today, 183))));
+  const occ = (sem) => {
+    const out = [];
+    for (let d = today; d <= last; d = addDays(d, 1)) {
+      for (const s of semSessionsOn(sem, d)) if (!s.exam) out.push({ date: ymd(d), start: s.start, end: s.end, subjectId: s.subjectId, room: s.room || '', type: s.type || '' });
+    }
+    return out;
+  };
+  return diffOccurrences(occ(before), occ(after));
+}
+
+const hm = (t) => String(t || '').replace(':', 'h');
+const dayTxt = (d) => fmtLong(parseYmd(d)).toLowerCase();
+
+function changeRow(c) {
+  const what = {
+    moved: () => ['Déplacé', `${dayTxt(c.old.date)} ${hm(c.old.start)} → <b>${dayTxt(c.new.date)} ${hm(c.new.start)}</b>`],
+    time: () => ['Horaire', `${dayTxt(c.date)} : ${hm(c.old.start)}–${hm(c.old.end)} → <b>${hm(c.new.start)}–${hm(c.new.end)}</b>`],
+    room: () => ['Salle', `${dayTxt(c.date)} ${hm(c.new.start)} : ${c.old.room ? `${esc(c.old.room)} → ` : ''}<b>${esc(c.new.room)}</b>`],
+    added: () => ['Ajouté', `<b>${dayTxt(c.date)} ${hm(c.new.start)}–${hm(c.new.end)}</b>${c.new.room ? ` · ${esc(c.new.room)}` : ''}`],
+    removed: () => ['Annulé', `<s>${dayTxt(c.date)} ${hm(c.old.start)}–${hm(c.old.end)}</s>`],
+  }[c.kind]();
+  return `<div class="chg chg-${c.kind}" style="--c:${esc(subjectColor(c.subjectId))}">
+    <span class="badge chg-k">${what[0]}</span>
+    <span class="chg-s"><b>${esc(subjectName(c.subjectId))}</b>${(c.new || c.old).type ? ` <span class="muted small">${esc((c.new || c.old).type)}</span>` : ''}</span>
+    <span class="chg-w">${what[1]}</span>
+  </div>`;
+}
+
+/** Changements encore à venir de la dernière version importée d'un semestre. */
+const upcomingChanges = (sem) => (sem?.changes?.items || []).filter((c) => c.date >= ymd(new Date()));
+
+/** Carte de la page Emploi du temps : ce que la nouvelle version a changé. */
+function changesCard(sem) {
+  const list = upcomingChanges(sem);
+  if (!sem.changes || sem.changes.hidden || !list.length) return '';
+  const shown = S.ui.allChanges ? list : list.slice(0, 8);
+  return `<section class="card stack chg-card" aria-labelledby="h-chg">
+    <div class="head" style="margin:0"><div><h2 id="h-chg">Ce qui a changé</h2>
+      <div class="muted small">Nouvelle version « ${esc(sem.changes.source)} », importée le ${esc(fmtShort(new Date(sem.changes.at)))} : ${list.length} changement${list.length > 1 ? 's' : ''} à venir.</div></div>
+      <button class="btn ghost small" data-act="changes-hide">Masquer</button></div>
+    <div class="chg-list">${shown.map(changeRow).join('')}</div>
+    ${list.length > shown.length ? `<button class="btn ghost small" data-act="changes-all">Voir les ${list.length - shown.length} autres</button>` : ''}
+  </section>`;
+}
+
+/** Accueil : les changements des 7 prochains jours, jusqu'à ce que tu les marques comme vus. */
+function changesNotice() {
+  const limit = ymd(addDays(new Date(), 7));
+  const items = S.semesters.filter((x) => x.changes && !x.changes.homeSeen)
+    .flatMap((x) => upcomingChanges(x).filter((c) => c.date <= limit).map((c) => ({ c, sem: x })));
+  if (!items.length) return '';
+  return `<section class="card stack chg-card" aria-labelledby="h-chg-home">
+    <div class="head" style="margin:0"><h2 id="h-chg-home">Ton emploi du temps a changé cette semaine</h2>
+      <span style="display:flex;gap:6px"><a class="btn ghost small" href="#/edt">Détails</a>
+      <button class="btn small" data-act="changes-seen">Vu</button></span></div>
+    <div class="chg-list">${items.slice(0, 5).map((x) => changeRow(x.c)).join('')}</div>
+    ${items.length > 5 ? `<a class="small" href="#/edt">et ${items.length - 5} autre${items.length > 6 ? 's' : ''}…</a>` : ''}
+  </section>`;
+}
 
 /* ---------- Dossiers de cours générés depuis l'emploi du temps ---------- */
 
@@ -2175,6 +2259,9 @@ const handlers = {
   },
   'show-done': () => { S.ui.showDone = !S.ui.showDone; render(); },
   'folders-open': () => openFolderDialog(currentSem()),
+  'changes-hide': async () => { const sem = currentSem(); if (sem?.changes) { sem.changes.hidden = true; sem.changes.homeSeen = true; await save('semesters'); } render(); },
+  'changes-all': () => { S.ui.allChanges = true; render(); },
+  'changes-seen': async () => { for (const x of S.semesters) if (x.changes) x.changes.homeSeen = true; await save('semesters'); render(); },
   'setup-hide': async () => { S.settings.hideSetup = true; await save('settings'); render(); },
   'folders-close': () => { S.ui.folderDlg = null; showFolderDialog(); },
   'folders-download': () => downloadFolderScript(),
