@@ -47,7 +47,24 @@ Firefox (version normale) n'installe que les extensions signées par Mozilla. La
    ```
    Ne mets jamais ces clés dans un fichier du projet.
 3. Le fichier signé arrive dans `web-ext-artifacts/`. Glisse-le dans Firefox (ou `about:addons` → ⚙ → Installer un module depuis un fichier).
-4. Pour une nouvelle version : augmente `version` dans `manifest.json`, puis relance la signature. Firefox garde tes données puisque l'identifiant ne change pas.
+4. Pour une nouvelle version, voir ci-dessous. Firefox garde tes données puisque l'identifiant ne change pas.
+
+## Publier une nouvelle version (mise à jour automatique)
+
+Depuis la 1.3.0, le manifeste indique `update_url` : Firefox consulte environ une fois par jour [`updates.json`](https://raw.githubusercontent.com/kango-hamed/mode-etude/main/updates.json) et installe tout seul les nouvelles versions publiées sur les [Releases GitHub](https://github.com/kango-hamed/mode-etude/releases).
+
+Prérequis : Node.js, le [GitHub CLI](https://cli.github.com) connecté (`gh auth login`) et tes clés AMO.
+
+1. Augmente `version` dans `manifest.json` et commite.
+2. Dans PowerShell, à la racine du projet :
+   ```powershell
+   $env:WEB_EXT_API_KEY = "user:..."; $env:WEB_EXT_API_SECRET = "..."
+   ```
+   ```powershell
+   .\scripts\release.ps1
+   ```
+   Le script signe la version chez Mozilla, crée le tag et la Release GitHub avec le `.xpi`, puis met à jour `updates.json` et pousse le tout.
+3. Pour vérifier tout de suite : `about:addons` → ⚙ → **Rechercher des mises à jour**.
 
 ## Premiers pas
 
@@ -64,7 +81,7 @@ Firefox (version normale) n'installe que les extensions signées par Mozilla. La
 
 Ajoute des « autres noms » à une matière dans les Réglages (ex. `SQL, BD` pour Bases de données). Un choix fait à la main est toujours prioritaire.
 
-## Limites connues (V1)
+## Limites connues
 
 - Firefox ne permet pas de surveiller un dossier : la resynchronisation est manuelle.
 - Les PDF sont **copiés** dans le stockage de l'extension, ce qui double la place qu'ils occupent sur le disque.
