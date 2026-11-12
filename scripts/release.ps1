@@ -9,6 +9,9 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
 function Fail($msg) { Write-Host "`n$msg" -ForegroundColor Red; exit 1 }
+# Lance une commande externe en silence et dit si elle a réussi. Sous PowerShell 5.1, rediriger la sortie
+# d'erreur d'un programme avec 'Stop' en fait une erreur bloquante : on repasse donc en 'Continue' ici.
+function Test-Native([scriptblock]$cmd) { $ErrorActionPreference = 'Continue'; & $cmd *> $null; return ($LASTEXITCODE -eq 0) }
 
 if (-not $env:WEB_EXT_API_KEY -or -not $env:WEB_EXT_API_SECRET) { Fail 'Clés AMO absentes : définis $env:WEB_EXT_API_KEY et $env:WEB_EXT_API_SECRET dans ce terminal.' }
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Fail 'GitHub CLI introuvable : winget install GitHub.cli, puis gh auth login.' }
@@ -21,8 +24,7 @@ $tag = "v$version"
 $repo = gh repo view --json nameWithOwner -q .nameWithOwner
 if (-not $repo) { Fail 'Dépôt GitHub introuvable (git remote origin).' }
 
-gh release view $tag *> $null
-if ($LASTEXITCODE -eq 0) { Fail "La Release $tag existe déjà : augmente la version dans manifest.json." }
+if (Test-Native { gh release view $tag }) { Fail "La Release $tag existe déjà : augmente la version dans manifest.json." }
 
 Write-Host "`n1/4 Signature de $version par Mozilla (quelques minutes)..." -ForegroundColor Cyan
 npx --yes web-ext sign --channel=unlisted
@@ -33,8 +35,7 @@ $xpi = "web-ext-artifacts\mode-etude-$version.xpi"
 Copy-Item $signed.FullName $xpi -Force
 
 Write-Host "2/4 Tag $tag..." -ForegroundColor Cyan
-git rev-parse -q --verify "refs/tags/$tag" *> $null
-if ($LASTEXITCODE -ne 0) { git tag -a $tag -m "Mode Étude $tag" }
+if (-not (Test-Native { git rev-parse -q --verify "refs/tags/$tag" })) { git tag -a $tag -m "Mode Étude $tag" }
 git push origin main --follow-tags
 git push origin $tag
 
