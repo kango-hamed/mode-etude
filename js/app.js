@@ -578,6 +578,7 @@ function viewHome() {
   if (!allSessions().length) setup.push('edt');
   if (!S.files.length) setup.push('folder');
   if (!S.settings.apiKey) setup.push('key');
+  if (S.settings.hideSetup) setup.length = 0;
 
   let emptyDay = '';
   if (!sessions.length) {
@@ -603,15 +604,16 @@ function viewHome() {
   </section>
 
   ${setup.length ? `<section class="steps" aria-label="Pour commencer">
-    <div class="step ${setup.includes('edt') ? '' : 'done'}"><b>Ton emploi du temps</b>
+    ${setup.includes('edt') ? `<div class="step"><b>Ton emploi du temps</b>
       <span class="muted small">Dépose le PDF de l'école, l'IA reconstruit ton planning.</span>
-      <a class="btn" href="#/reglages">Importer</a></div>
-    <div class="step ${setup.includes('folder') ? '' : 'done'}"><b>Ton dossier de cours</b>
+      <a class="btn" href="#/reglages">Importer</a></div>` : ''}
+    ${setup.includes('folder') ? `<div class="step"><b>Ton dossier de cours</b>
       <span class="muted small">Choisis le dossier où sont tes PDF : ils seront rangés par matière et cherchables.</span>
-      <button class="btn" data-act="pick-folder">Choisir le dossier</button></div>
-    <div class="step ${setup.includes('key') ? '' : 'done'}"><b>Clé IA gratuite</b>
+      <button class="btn" data-act="pick-folder">Choisir le dossier</button></div>` : ''}
+    ${setup.includes('key') ? `<div class="step"><b>Clé IA gratuite</b>
       <span class="muted small">Optionnel, mais nécessaire pour lire l'emploi du temps automatiquement.</span>
-      <a class="btn" href="#/reglages">Ajouter la clé</a></div>
+      <a class="btn" href="#/reglages">Ajouter la clé</a></div>` : ''}
+    <button class="btn ghost icon steps-close" data-act="setup-hide" aria-label="Masquer ces suggestions" title="Masquer (tout reste dans Réglages → Imports)">×</button>
   </section>` : ''}
 
   <div class="widgets">
@@ -1520,9 +1522,47 @@ async function openFile(id, page = 1, q = '') {
   setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
 }
 
+/**
+ * Choix du dossier de cours. Firefox parcourt tout le dossier AVANT de prévenir la page,
+ * sans rien afficher : sur un gros dossier, ça peut durer. On affiche donc un message dès que
+ * la fenêtre de choix se ferme, jusqu'à ce que Firefox livre les fichiers (ou que tu annules).
+ */
+function pickFolder() {
+  const inp = $('#folderInput');
+  let waiting = false; let timer = 0;
+  const stop = () => { clearTimeout(timer); window.removeEventListener('focus', onBack); inp.removeEventListener('cancel', onCancel); };
+  const onBack = () => setTimeout(() => {
+    if (inp.dataset.got) return;
+    waiting = true;
+    busy('Firefox lit le contenu du dossier…', 'Il parcourt tous les sous-dossiers avant de les transmettre : ça peut prendre un moment pour un gros dossier.', null);
+    // Un seul fichier illisible (socket MySQL/Docker, fichier verrouillé…) et Firefox abandonne tout, sans prévenir.
+    timer = setTimeout(() => {
+      if (inp.dataset.got) return;
+      busy(null);
+      toast("Firefox n'a toujours rien transmis. Souvent, un fichier illisible bloque tout le dossier : un socket de base de données (mysql.sock), un volume Docker, un fichier verrouillé. Sors ces dossiers techniques du dossier de cours, puis réessaie.", 20000);
+    }, 45000);
+  }, 400);
+  const onCancel = () => { stop(); if (waiting) busy(null); };
+  delete inp.dataset.got;
+  window.addEventListener('focus', onBack, { once: true });
+  inp.addEventListener('cancel', onCancel, { once: true });
+  inp.onchange = () => { inp.dataset.got = '1'; stop(); };
+  inp.click();
+}
+
 async function syncFolder(fileList) {
-  const pdfs = [...fileList].filter((f) => /\.pdf$/i.test(f.name));
-  if (!pdfs.length) { toast('Aucun PDF trouvé dans ce dossier.'); return; }
+  const all = [...fileList];
+  const pdfs = all.filter((f) => /\.pdf$/i.test(f.name));
+  if (!all.length) {
+    busy(null);
+    toast("Firefox n'a transmis aucun fichier de ce dossier. S'il est dans OneDrive, rends les fichiers disponibles hors connexion (clic droit → « Toujours conserver sur cet appareil »), puis réessaie.", 12000);
+    return;
+  }
+  if (!pdfs.length) {
+    busy(null);
+    toast(`Aucun PDF parmi les ${all.length} fichiers de « ${(all[0].webkitRelativePath || '').split('/')[0] || 'ce dossier'} ».`, 8000);
+    return;
+  }
   const root = (pdfs[0].webkitRelativePath || pdfs[0].name).split('/')[0];
   const existing = new Map(S.files.map((f) => [f.path, f]));
   const seen = new Set();
@@ -2013,6 +2053,7 @@ const handlers = {
   },
   'show-done': () => { S.ui.showDone = !S.ui.showDone; render(); },
   'folders-open': () => openFolderDialog(currentSem()),
+  'setup-hide': async () => { S.settings.hideSetup = true; await save('settings'); render(); },
   'folders-close': () => { S.ui.folderDlg = null; showFolderDialog(); },
   'folders-download': () => downloadFolderScript(),
   'fit-more': (el) => { S.ui.more = el.dataset.fit; showMore(); $('#overlay [data-act="more-close"]')?.focus(); },
@@ -2038,7 +2079,7 @@ const handlers = {
   'proj-show-done': () => { S.ui.showProjDone = !S.ui.showProjDone; render(); },
   'del-dl': async (el) => { S.deadlines = S.deadlines.filter((d) => d.id !== el.dataset.id); await save('deadlines'); render(); },
   'open-file': (el) => openFile(el.dataset.id, Number(el.dataset.page) || 1, el.dataset.q || ''),
-  'pick-folder': () => $('#folderInput').click(),
+  'pick-folder': () => pickFolder(),
   'pick-edt': () => $('#edtInput').click(),
   'open-edt-pdf': async () => {
     const b = await db.kvGet(`timetablePdf:${currentSem()?.id}`);
@@ -2147,8 +2188,8 @@ document.addEventListener('change', async (e) => {
     await save('subjects'); recomputeAuto();
     if (t.dataset.f === 'code' || t.dataset.f === 'color') render(); // la grille de l'emploi du temps change
   } else if (t.id === 'folderInput') {
-    if (t.files.length) await syncFolder(t.files);
-    t.value = '';
+    const files = [...t.files]; t.value = '';
+    await syncFolder(files);
   } else if (t.id === 'examInput') {
     const f = t.files[0]; t.value = '';
     if (f) await importExamPdf(f);

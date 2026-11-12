@@ -226,10 +226,9 @@ table.edit .input { height: 36px; border-radius: 8px; padding: 0 8px; }
 /* Notices */
 .notice { border-radius: 12px; padding: 14px 16px; background: var(--accent-soft); color: var(--ink); }
 .notice.warn { background: var(--warn-soft); border: 1px solid var(--warn-line); color: var(--warn-ink); }
-.steps { counter-reset: s; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.steps { position: relative; counter-reset: s; display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
 .step { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
-.step.done { opacity: .65; }
-.step b::before { counter-increment: s; content: counter(s) ". "; }
+.steps-close { position: absolute; top: 6px; right: 6px; }
 
 /* Accueil : recherche, raccourcis, widgets */
 .home-hero { display: flex; flex-direction: column; align-items: center; gap: 18px; padding-top: 18px; position: relative; }
