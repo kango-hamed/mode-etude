@@ -532,3 +532,17 @@ body.theme-wall { background-position: top center; }
 /* Vérification d'un emploi du temps : la période couverte (classe, semestre, partie, dates) */
 .dm-grid { display: grid; grid-template-columns: 2fr repeat(2, minmax(90px, 1fr)) repeat(2, minmax(140px, 1.3fr)); gap: 10px; }
 @media (max-width: 760px) { .dm-grid { grid-template-columns: 1fr 1fr; } .dm-grid .f:first-child { grid-column: 1 / -1; } }
+
+/* Révisions */
+.rev-list { display: grid; gap: 16px; }
+.rev-exam { display: flex; flex-direction: column; gap: 8px; border-left: 4px solid var(--c); }
+.rev-head { display: flex; align-items: center; gap: 12px; }
+.rev-head > div { flex: 1; min-width: 0; }
+.rev-head h2 { margin: 0; }
+.rev-head h2 a { color: inherit; text-decoration: none; }
+.rev-head h2 a:hover { text-decoration: underline; }
+.rev-bar { height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.rev-bar i { display: block; height: 100%; background: var(--c); border-radius: inherit; transition: width .2s; }
+.rev-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 20px; margin-top: 6px; }
+.rev-grid h3 { margin: 0 0 6px; font-size: 14px; }
+@media (max-width: 760px) { .rev-grid { grid-template-columns: minmax(0, 1fr); } }

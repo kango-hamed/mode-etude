@@ -6,6 +6,7 @@ import { guessSubject, sameSubject, PALETTE, periodOf, contentDirs, periodLabel,
 import { topSites, webSearch, hostOf, cleanTitle } from './browser.js';
 import { themeSupported, currentTheme, onThemeChange, paletteFrom, themeImage, canLoad } from './theme.js';
 import { PROJECT_KINDS, REMINDERS, DEFAULT_REMIND, announce, loadProjects } from './projects.js';
+import { planRevisions, stageLabel, docKind, KIND_ORDER } from './revisions.js';
 import {
   DAYS, ymd, parseYmd, isoDay, addDays, startOfDay, startOfWeek, fmtLong, fmtShort,
   relDue, esc, fold, keyOf, highlight, uid, fmtSize, normTime, daysBetween,
@@ -22,6 +23,8 @@ const S = {
   deadlines: [],
   // Projets et compétitions en cours : { id, name, kind, due, url, next, progress (0-100), done }
   projects: [],
+  // Révisions : séances faites (clé matière|date|étape) et documents revus (clé matière|fichier).
+  revisions: { done: {}, checked: {} },
   files: [],
   auto: new Map(), // fileId -> subjectId deviné
   pages: null, // cache de recherche
@@ -37,6 +40,7 @@ async function load() {
     db.kvGet('settings'), db.kvGet('semesters'), db.kvGet('timetable'), db.kvGet('subjects'), db.kvGet('deadlines'), db.getFiles(),
     db.kvGet('shortcuts'), topSites(), db.kvGet('wallpaper'), db.kvGet('projects'),
   ]);
+  S.revisions = { done: {}, checked: {}, ...(await db.kvGet('revisions') || {}) };
   Object.assign(S.settings, settings || {});
   Object.assign(S.shortcuts, shortcuts || {});
   S.topSites = sites;
@@ -274,6 +278,61 @@ const pendingDeadlines = (subjectId) => S.deadlines
 
 const filesOf = (subjectId) => S.files.filter((f) => subjectOfFile(f) === subjectId);
 
+/* ---------- Révisions ---------- */
+
+/** Épreuves datées de tous les semestres (sans doublon quand deux parties partagent une épreuve). */
+function examList() {
+  const seen = new Set();
+  return allSessions().filter((s) => s.exam && s.date && s.subjectId)
+    .filter((s) => { const k = `${s.subjectId}|${s.date}|${s.start}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
+}
+const classesOn = (d) => sessionsOn(d).filter((s) => !s.exam);
+const dayLoad = (d) => classesOn(d).reduce((m, s) => m + duration(s), 0);
+const lastEnd = (d) => classesOn(d).map((s) => s.end || s.start).sort().at(-1) || '';
+
+/** Séances de révision prévues pour les épreuves à venir (recalculées à chaque affichage). */
+const revisionPlan = () => planRevisions(examList(), { today: new Date(), load: dayLoad, lastEnd });
+
+/** Documents d'une matière rangés par rubrique (Cours, TD, TP, Annales, Autres). */
+function examDocs(subjectId) {
+  const groups = new Map();
+  for (const f of filesOf(subjectId).sort((a, b) => a.path.localeCompare(b.path, 'fr', { numeric: true }))) {
+    const k = docKind(contentDirs(f.path).slice(1));
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(f);
+  }
+  return KIND_ORDER.filter((k) => groups.has(k)).map((k) => ({ kind: k, files: groups.get(k) }));
+}
+const docKey = (subjectId, f) => `${subjectId}|${f.id}`;
+
+/** Avancement d'une épreuve : séances faites et documents revus, sur le total. */
+function examProgress(exam, plan) {
+  const revs = plan.filter((r) => r.exam === exam);
+  const docs = examDocs(exam.subjectId).flatMap((g) => g.files);
+  const total = revs.length + docs.length;
+  const done = revs.filter((r) => S.revisions.done[r.key]).length + docs.filter((f) => S.revisions.checked[docKey(exam.subjectId, f)]).length;
+  return { done, total, pct: total ? Math.round((done / total) * 100) : 0 };
+}
+
+const revWhen = (r) => (r.after ? `après ${r.after.replace(':', 'h')}` : 'journée sans cours');
+
+function revRow(r, { withDate = true } = {}) {
+  const today = ymd(new Date());
+  const late = r.date < today && !S.revisions.done[r.key];
+  const id = `rv-${keyOf(r.key).replace(/ /g, '-')}`;
+  return `<div class="dl rev ${S.revisions.done[r.key] ? 'done' : ''}">
+    <input type="checkbox" id="${esc(id)}" data-rev="${esc(r.key)}" ${S.revisions.done[r.key] ? 'checked' : ''}>
+    <label class="what" for="${esc(id)}">
+      <b>${withDate ? esc(subjectName(r.exam.subjectId)) : esc(stageLabel(r.stage))}</b>
+      <span class="muted small">${withDate
+        ? `${esc(stageLabel(r.stage))} · examen ${esc(fmtLong(parseYmd(r.exam.date)).toLowerCase())}`
+        : `${esc(fmtLong(parseYmd(r.date)))} · ${esc(revWhen(r))}`}</span>
+    </label>
+    ${late ? '<span class="badge warn">En retard</span>' : withDate ? `<span class="badge plain">${esc(r.date === today ? revWhen(r) : relDue(r.date).label)}</span>` : ''}
+  </div>`;
+}
+
 /* ---------- Petits composants ---------- */
 
 function toast(msg, ms = 3200) {
@@ -487,6 +546,10 @@ function homeList(kind) {
     const day = addDays(startOfDay(new Date()), S.ui.day);
     return { title: `Mes cours ${S.ui.day === 0 ? "aujourd'hui" : 'demain'}`, items: sessionsOn(day).map((s) => sessionRow(s, day)) };
   }
+  if (kind === 'rev') {
+    const today = ymd(new Date());
+    return { title: 'À réviser', items: revisionPlan().filter((r) => r.date <= today && !S.revisions.done[r.key]).map((r) => revRow(r)) };
+  }
   if (kind === 'due') {
     return { title: 'À rendre', items: [...pendingDeadlines(), ...(S.ui.showDone ? S.deadlines.filter((d) => d.done) : [])].map(deadlineRow) };
   }
@@ -636,8 +699,66 @@ function viewHome() {
       ${addDeadlineForm()}
     </section>
 
+    ${revCard()}
+
     ${projectsCard()}
   </div>`;
+}
+
+/** Widget « À réviser » : les séances du jour (et celles en retard). Absent sans épreuve à venir. */
+function revCard() {
+  const plan = revisionPlan();
+  if (!plan.length) return '';
+  const next = plan.find((r) => r.date > ymd(new Date()) && !S.revisions.done[r.key]);
+  const empty = `<div class="empty">Rien à réviser aujourd'hui.${next ? `<br>Prochaine séance : <b>${esc(subjectName(next.exam.subjectId))}</b>, ${esc(fmtLong(parseYmd(next.date)).toLowerCase())}.` : ''}</div>`;
+  return `<section class="card" aria-labelledby="h-rev">
+      <div class="head"><h2 id="h-rev">À réviser</h2><a class="btn ghost small" href="#/revisions">Planning</a></div>
+      ${fitList('rev', homeList('rev').items, empty)}
+    </section>`;
+}
+
+/* ---------- Page Révisions ---------- */
+
+function viewRevisions() {
+  const plan = revisionPlan();
+  const today = ymd(new Date());
+  const exams = [...new Set(plan.map((r) => r.exam))];
+  const intro = `<p class="muted" style="margin:0">Avant chaque épreuve : une séance à J-14, J-7, J-3 et la veille, placées sur tes jours les moins chargés (jamais plus de deux par jour).
+    Coche les séances faites et les documents revus.</p>`;
+  if (!exams.length) {
+    const past = examList().length;
+    return `<h1>Révisions</h1>${intro}
+      <div class="notice">${past ? 'Toutes tes épreuves sont passées.' : 'Aucune épreuve connue pour l\'instant.'}
+        Importe le calendrier des examens dans <a href="#/reglages">Réglages → Imports</a> : le planning se crée tout seul.</div>`;
+  }
+  return `<h1>Révisions</h1>${intro}
+  <div class="rev-list">${exams.map((e) => {
+    const p = examProgress(e, plan);
+    const n = daysBetween(new Date(), parseYmd(e.date));
+    const docs = examDocs(e.subjectId);
+    return `<section class="card rev-exam" style="--c:${esc(subjectColor(e.subjectId))}" aria-labelledby="h-rv-${esc(e.id)}">
+      <div class="rev-head">
+        <span class="sp-chip" style="background:${esc(subjectColor(e.subjectId))}" aria-hidden="true"></span>
+        <div><h2 id="h-rv-${esc(e.id)}"><a href="#/matiere/${esc(e.subjectId)}">${esc(subjectName(e.subjectId))}</a></h2>
+          <div class="muted small">${esc(e.type && e.type !== 'Examen' ? e.type : 'Examen')} · ${esc(fmtLong(parseYmd(e.date)))} · ${esc(e.start.replace(':', 'h'))}${e.room ? ` · ${esc(e.room)}` : ''}</div></div>
+        <span class="badge ${n <= 3 ? 'warn' : 'plain'}">${n === 1 ? 'demain' : `dans ${n} jours`}</span>
+      </div>
+      <div class="rev-bar" role="progressbar" aria-valuenow="${p.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="Avancement">
+        <i style="width:${p.pct}%"></i></div>
+      <div class="muted small">${p.done}/${p.total} · ${p.pct} %</div>
+      <div class="rev-grid">
+        <div><h3>Séances</h3>${plan.filter((r) => r.exam === e).map((r) => revRow(r, { withDate: false })).join('')}</div>
+        <div><h3>À revoir</h3>${docs.length ? docs.map((g) => `<div class="fgroup"><h4>${esc(g.kind)} <span class="muted">(${g.files.filter((f) => S.revisions.checked[docKey(e.subjectId, f)]).length}/${g.files.length})</span></h4>
+          ${g.files.map((f) => { const k = docKey(e.subjectId, f); const id = `rd-${esc(e.id)}-${esc(f.id)}`; return `<div class="dl ${S.revisions.checked[k] ? 'done' : ''}">
+            <input type="checkbox" id="${id}" data-revdoc="${esc(k)}" ${S.revisions.checked[k] ? 'checked' : ''}>
+            <label class="what" for="${id}"><b>${esc(f.name.replace(/\.pdf$/i, ''))}</b></label>
+            <button class="btn ghost small" data-act="open-file" data-id="${esc(f.id)}">Ouvrir</button></div>`; }).join('')}</div>`).join('')
+          : `<div class="empty">Aucun PDF rattaché à cette matière. ${S.files.length ? `Range-les depuis <a href="#/matiere/${esc(e.subjectId)}">Mon semestre</a>.` : 'Choisis ton dossier de cours dans les <a href="#/reglages">Réglages</a>.'}</div>`}
+          ${docs.length && !docs.some((g) => g.kind === 'Annales') ? '<p class="muted small" style="margin:6px 0 0">Pas d\'annales : ajoute un dossier « Annales » dans cette matière pour t\'entraîner sur d\'anciens sujets.</p>' : ''}
+        </div>
+      </div>
+    </section>`;
+  }).join('')}</div>`;
 }
 
 const dueByDay = (d) => S.deadlines.filter((x) => !x.done && x.due === ymd(d));
@@ -811,7 +932,8 @@ function subjectPanel(id) {
       </div>
       ${exam ? `<div class="sp-exam"><span class="badge exam-badge">${esc(exam.type || 'Examen')}</span>
         <b>${esc(fmtLong(parseYmd(exam.date)))}</b> · ${esc(exam.start.replace(':', 'h'))} – ${esc((exam.end || '').replace(':', 'h'))}${exam.room ? ` · ${esc(exam.room)}` : ''}
-        <span class="muted small">(${(() => { const n = daysBetween(new Date(), parseYmd(exam.date)); return n > 6 ? `dans ${n} jours` : esc(relDue(exam.date).label); })()})</span></div>` : ''}
+        <span class="muted small">(${(() => { const n = daysBetween(new Date(), parseYmd(exam.date)); return n > 6 ? `dans ${n} jours` : esc(relDue(exam.date).label); })()})</span>
+        <a class="small" href="#/revisions">Planning de révisions</a></div>` : ''}
     </div>
     <div class="sp-grid">
       <div class="sp-files">
@@ -1423,7 +1545,7 @@ function route() {
   }
   const map = { '': ['home', viewHome], semaine: ['semaine', viewWeek], semestre: ['semestre', () => viewCourses('')],
     matiere: ['semestre', () => viewCourses(decodeURIComponent(arg || ''))], 'a-classer': ['semestre', () => viewCourses('a-classer')],
-    edt: ['edt', viewTimetable], reglages: ['reglages', viewSettings] };
+    edt: ['edt', viewTimetable], revisions: ['revisions', viewRevisions], reglages: ['reglages', viewSettings] };
   const [nav, fn] = map[name] || map[''];
   document.querySelectorAll('[data-nav]').forEach((a) => {
     if (a.dataset.nav === nav) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -2133,7 +2255,7 @@ const handlers = {
     await db.clearFiles(); S.files = []; S.pages = null; S.settings.folder = null; await save('settings'); recomputeAuto(); render();
   },
   export: () => {
-    const data = { app: 'mode-etude', version: 2, exportedAt: new Date().toISOString(), semesters: S.semesters, subjects: S.subjects, deadlines: S.deadlines, projects: S.projects,
+    const data = { app: 'mode-etude', version: 2, exportedAt: new Date().toISOString(), semesters: S.semesters, subjects: S.subjects, deadlines: S.deadlines, projects: S.projects, revisions: S.revisions,
       assignments: Object.fromEntries(S.files.filter((f) => f.subjectId).map((f) => [f.path, f.subjectId])) };
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
@@ -2166,6 +2288,12 @@ document.addEventListener('change', async (e) => {
   if (t.matches('[data-proj-progress]')) {
     const p = S.projects.find((x) => x.id === t.dataset.projProgress);
     if (p) { p.progress = Number(t.value); await saveProjectsAndAnnounce(); }
+  } else if (t.matches('[data-rev]')) {
+    if (t.checked) S.revisions.done[t.dataset.rev] = true; else delete S.revisions.done[t.dataset.rev];
+    await save('revisions'); setTimeout(render, 250);
+  } else if (t.matches('[data-revdoc]')) {
+    if (t.checked) S.revisions.checked[t.dataset.revdoc] = true; else delete S.revisions.checked[t.dataset.revdoc];
+    await save('revisions'); render();
   } else if (t.matches('[data-act="toggle-dl"]')) {
     const d = S.deadlines.find((x) => x.id === t.dataset.id);
     if (d) { d.done = t.checked; await save('deadlines'); setTimeout(render, 250); }
@@ -2286,7 +2414,8 @@ async function restoreBackup(file) {
     else if (data.timetable?.sessions?.length) S.semesters = [{ ...data.timetable, id: uid(), hasPdf: false }]; // sauvegarde version 1
     S.subjects = data.subjects || []; S.deadlines = data.deadlines || []; S.ui.semId = null;
     if (data.projects) S.projects = data.projects;
-    await Promise.all([save('semesters'), save('subjects'), save('deadlines'), save('projects')]);
+    if (data.revisions) S.revisions = { done: {}, checked: {}, ...data.revisions };
+    await Promise.all([save('semesters'), save('subjects'), save('deadlines'), save('projects'), save('revisions')]);
     for (const f of S.files) {
       const sid = data.assignments?.[f.path];
       if (sid) { f.subjectId = sid; await db.updateFile(f.id, { subjectId: sid }); }
