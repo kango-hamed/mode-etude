@@ -1,0 +1,13 @@
+{
+    "addons":  {
+                   "mode-etude@local":  {
+                                            "updates":  [
+                                                            {
+                                                                "version":  "1.3.0",
+                                                                "update_link":  "https://github.com/kango-hamed/mode-etude/releases/download/v1.3.0/mode-etude-1.3.0.xpi",
+                                                                "update_hash":  "sha256:b11b198d3ad2aa4a240d36961e80c3210363921c6e19ed84d6fc2104c3ff9034"
+                                                            }
+                                                        ]
+                                        }
+               }
+}
